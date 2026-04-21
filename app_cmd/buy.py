@@ -102,5 +102,6 @@ def buy_cmd(args: Namespace):
         interval_jitter=getattr(args, "interval_jitter", 0.25),
         scavenge_mode=getattr(args, "scavenge_mode", False),
         scavenge_interval=getattr(args, "scavenge_interval", 3000),
+        scavenge_max_retries=getattr(args, "scavenge_max_retries", 0),
     )
     logger.info("抢票完成后退出程序。。。。。")

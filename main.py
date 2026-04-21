@@ -181,6 +181,12 @@ def main():
         default=int(os.environ.get("BTB_SCAVENGE_INTERVAL", 3000)),
         help="捡漏模式下「无票」时的轮询间隔（ms），默认 3000。",
     )
+    antirc.add_argument(
+        "--scavenge_max_retries",
+        type=int,
+        default=int(os.environ.get("BTB_SCAVENGE_MAX_RETRIES", 0)),
+        help="捡漏专用重试次数上限，独立于 --max_retries。0 或负数表示无限，默认 0（无限）。",
+    )
 
     # ===== Runtime / UI =====
     runtime = buy_parser.add_argument_group("Runtime & UI Options")

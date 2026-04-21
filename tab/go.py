@@ -642,6 +642,12 @@ def go_tab(demo: gr.Blocks):
                 minimum=500,
                 info="捡漏模式下无票时的轮询间隔，建议 2000~5000",
             )
+            scavenge_max_retries_ui = gr.Number(
+                label="捡漏最大次数",
+                value=0,
+                minimum=0,
+                info="捡漏专用上限，独立于「单轮最大重试」。0 表示无限轮询",
+            )
             choices = ["网页"]
             if platform.system() == "Windows":
                 choices.insert(0, "终端")  # 或 append，取决于你想要顺序
@@ -687,6 +693,7 @@ def go_tab(demo: gr.Blocks):
         max_retries,
         scavenge_mode,
         scavenge_interval,
+        scavenge_max_retries,
     ):
         if not files:
             return [gr.update(value=withTimeString("未提交抢票配置"), visible=True)]
@@ -755,6 +762,7 @@ def go_tab(demo: gr.Blocks):
                     interval_jitter=float(interval_jitter or 0.0),
                     scavenge_mode=bool(scavenge_mode),
                     scavenge_interval=int(scavenge_interval or 3000),
+                    scavenge_max_retries=int(scavenge_max_retries or 0),
                 )
                 assigned_proxies_next_idx += 1
         gr.Info("正在启动，请等待抢票页面弹出。")
@@ -841,5 +849,6 @@ def go_tab(demo: gr.Blocks):
             max_retries_ui,
             scavenge_mode_ui,
             scavenge_interval_ui,
+            scavenge_max_retries_ui,
         ],
     )

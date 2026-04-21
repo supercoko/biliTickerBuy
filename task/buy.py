@@ -128,16 +128,20 @@ def buy_stream(
     interval_jitter: float = 0.25,
     scavenge_mode: bool = False,
     scavenge_interval: int = 3000,
+    scavenge_max_retries: int = 0,
 ):
     """抢票主循环。
 
     Parameters
     ----------
-    max_retries: createV2 阶段每轮最大重试次数（达到后会重新 prepare）。
+    max_retries: 普通重试次数上限（达到后会重新 prepare）。
+                 仅用于「非捡漏错误码」的重试计数。
     interval_jitter: 每次下单间隔的抖动比例，0.25 表示 ±25%。
     scavenge_mode: 捡漏模式——遇到「无票/库存不足/活动收摊」也持续轮询，
                    配合较长的 ``scavenge_interval`` 应对退票释放。
     scavenge_interval: 捡漏模式下，「无票」时的轮询间隔（ms）。
+    scavenge_max_retries: 捡漏专用重试上限，独立于 ``max_retries``。
+                          ``<= 0`` 表示无限轮询（常用于长时间守株待兔）。
     """
     isRunning = True
     tickets_info = json.loads(tickets_info)
@@ -155,7 +159,11 @@ def buy_stream(
     yield from _wait_until_start(time_start)
 
     if scavenge_mode:
-        yield f"🔍 捡漏模式已开启（间隔 {scavenge_interval}ms ± {int(interval_jitter*100)}%）"
+        limit_desc = str(scavenge_max_retries) if scavenge_max_retries > 0 else "∞"
+        yield (
+            f"🔍 捡漏模式已开启（间隔 {scavenge_interval}ms ± "
+            f"{int(interval_jitter*100)}%, 上限 {limit_desc} 次）"
+        )
 
     while isRunning:
         try:
@@ -178,10 +186,13 @@ def buy_stream(
             )
 
             result = None
-            for attempt in range(1, max_retries + 1):
-                if not isRunning:
-                    yield "抢票结束"
-                    break
+            attempt = 0
+            scavenge_attempt = 0
+            scavenge_limit_str = (
+                str(scavenge_max_retries) if scavenge_max_retries > 0 else "∞"
+            )
+            exhausted = False
+            while isRunning:
                 try:
                     url = f"{base_url}/api/ticket/order/createV2?project_id={tickets_info['project_id']}"
                     if is_hot_project:
@@ -208,12 +219,24 @@ def buy_stream(
                         result = (ret, err)
                         break
                     if err == 100051:
-                        # token 过期，立即退出重试循环重新 prepare
+                        # token 过期，退出重试重新 prepare
                         break
-                    # 捡漏模式：无票/库存不足/活动收摊 → 拉长间隔继续轮询
+                    # 捡漏分支：使用独立计数器，不消耗 max_retries
                     if err in SOLD_OUT_ERRNOS:
                         if scavenge_mode:
-                            yield f"[捡漏 {attempt}/{max_retries}] [{err}]({ERRNO_DICT.get(err, '未知')}) 等待退票..."
+                            scavenge_attempt += 1
+                            if (
+                                scavenge_max_retries > 0
+                                and scavenge_attempt > scavenge_max_retries
+                            ):
+                                yield (
+                                    f"捡漏达上限 {scavenge_max_retries} 次，停止抢票"
+                                )
+                                return
+                            yield (
+                                f"[捡漏 {scavenge_attempt}/{scavenge_limit_str}] "
+                                f"[{err}]({ERRNO_DICT.get(err, '未知')}) 等待退票..."
+                            )
                             _jittered_sleep(scavenge_interval, interval_jitter)
                             continue
                         # 非捡漏模式下 100039 表示活动彻底结束，退出
@@ -221,21 +244,37 @@ def buy_stream(
                             yield f"活动已结束 ({err})，停止抢票"
                             return
                     if err in BUSY_ERRNOS:
-                        yield f"[尝试 {attempt}/{max_retries}] 服务繁忙 [{err}]，退避"
+                        yield f"[尝试] 服务繁忙 [{err}]，退避"
                         _jittered_sleep(interval * 2, interval_jitter)
                         continue
-                    yield f"[尝试 {attempt}/{max_retries}]  [{err}]({ERRNO_DICT.get(err, '未知错误码')}) | {ret}"
 
+                    attempt += 1
+                    if attempt > max_retries:
+                        exhausted = True
+                        break
+                    yield f"[尝试 {attempt}/{max_retries}]  [{err}]({ERRNO_DICT.get(err, '未知错误码')}) | {ret}"
                     _jittered_sleep(interval, interval_jitter)
 
                 except RequestException as e:
+                    attempt += 1
+                    if attempt > max_retries:
+                        exhausted = True
+                        break
                     yield f"[尝试 {attempt}/{max_retries}] 请求异常: {e}"
                     _jittered_sleep(interval, interval_jitter)
 
                 except Exception as e:
+                    attempt += 1
+                    if attempt > max_retries:
+                        exhausted = True
+                        break
                     yield f"[尝试 {attempt}/{max_retries}] 未知异常: {e}"
                     _jittered_sleep(interval, interval_jitter)
-            else:
+
+            if not isRunning:
+                yield "抢票结束"
+                break
+            if exhausted:
                 if show_random_message:
                     yield f"群友说👴： {get_random_fail_message()}"
                 yield "重试次数过多，重新准备订单"
@@ -302,6 +341,7 @@ def buy(
     interval_jitter: float = 0.25,
     scavenge_mode: bool = False,
     scavenge_interval: int = 3000,
+    scavenge_max_retries: int = 0,
 ):
     notifier_config = NotifierConfig(
         serverchan_key=serverchanKey,
@@ -328,6 +368,7 @@ def buy(
         interval_jitter=interval_jitter,
         scavenge_mode=scavenge_mode,
         scavenge_interval=scavenge_interval,
+        scavenge_max_retries=scavenge_max_retries,
     ):
         logger.info(msg)
 
@@ -354,6 +395,7 @@ def buy_new_terminal(
     interval_jitter: float = 0.25,
     scavenge_mode: bool = False,
     scavenge_interval: int = 3000,
+    scavenge_max_retries: int = 0,
 ) -> subprocess.Popen:
     command = None
 
@@ -408,6 +450,7 @@ def buy_new_terminal(
     if scavenge_mode:
         command.append("--scavenge_mode")
         command.extend(["--scavenge_interval", str(scavenge_interval)])
+        command.extend(["--scavenge_max_retries", str(scavenge_max_retries)])
     if terminal_ui == "网页":
         command.append("--web")
     command.extend(["--endpoint_url", endpoint_url])
