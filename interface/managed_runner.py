@@ -98,6 +98,8 @@ def main(run_dir_arg: str) -> int:
         ntfy_url=runtime.get("ntfy_url", ""),
         ntfy_username=runtime.get("ntfy_username", ""),
         ntfy_password=runtime.get("ntfy_password", ""),
+        feishu_webhook=runtime.get("feishu_webhook", ""),
+        feishu_secret=runtime.get("feishu_secret", ""),
         audio_path=runtime.get("audio_path", ""),
     )
 

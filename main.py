@@ -142,6 +142,45 @@ def main():
         default=os.environ.get("BTB_NTFY_PASSWORD", ""),
         help="Ntfy password (optional).",
     )
+    notify.add_argument(
+        "--feishu_webhook",
+        type=str,
+        default=os.environ.get("BTB_FEISHU_WEBHOOK", ""),
+        help="Feishu bot webhook URL or token (optional).",
+    )
+    notify.add_argument(
+        "--feishu_secret",
+        type=str,
+        default=os.environ.get("BTB_FEISHU_SECRET", ""),
+        help="Feishu signed-verification secret (optional).",
+    )
+
+    # ===== Anti risk-control / 捡漏 =====
+    antirc = buy_parser.add_argument_group("Anti Risk-Control & Scavenge Options")
+    antirc.add_argument(
+        "--max_retries",
+        type=int,
+        default=int(os.environ.get("BTB_MAX_RETRIES", 200)),
+        help="每轮 createV2 最大重试次数，达到后重新 prepare。默认 200。",
+    )
+    antirc.add_argument(
+        "--interval_jitter",
+        type=float,
+        default=float(os.environ.get("BTB_INTERVAL_JITTER", 0.25)),
+        help="每次下单间隔的随机抖动比例（0-1），默认 0.25 表示 ±25%%。",
+    )
+    antirc.add_argument(
+        "--scavenge_mode",
+        action="store_true",
+        default=str_to_bool(os.environ.get("BTB_SCAVENGE_MODE", False)),
+        help="开启捡漏模式：对无票/库存不足持续轮询，应对退票释放。",
+    )
+    antirc.add_argument(
+        "--scavenge_interval",
+        type=int,
+        default=int(os.environ.get("BTB_SCAVENGE_INTERVAL", 3000)),
+        help="捡漏模式下「无票」时的轮询间隔（ms），默认 3000。",
+    )
 
     # ===== Runtime / UI =====
     runtime = buy_parser.add_argument_group("Runtime & UI Options")

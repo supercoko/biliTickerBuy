@@ -94,6 +94,13 @@ def buy_cmd(args: Namespace):
         args.ntfy_url,
         args.ntfy_username,
         args.ntfy_password,
+        getattr(args, "feishu_webhook", None) or None,
+        getattr(args, "feishu_secret", None) or None,
         not args.hide_random_message,
+        True,
+        max_retries=getattr(args, "max_retries", 200),
+        interval_jitter=getattr(args, "interval_jitter", 0.25),
+        scavenge_mode=getattr(args, "scavenge_mode", False),
+        scavenge_interval=getattr(args, "scavenge_interval", 3000),
     )
     logger.info("抢票完成后退出程序。。。。。")

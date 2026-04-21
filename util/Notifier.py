@@ -87,8 +87,10 @@ class NotifierConfig:
     ntfy_url: Optional[str] = None
     ntfy_username: Optional[str] = None
     ntfy_password: Optional[str] = None
+    feishu_webhook: Optional[str] = None
+    feishu_secret: Optional[str] = None
     audio_path: Optional[str] = None
-    
+
     @classmethod
     def from_config_db(cls):
         """从ConfigDB加载配置"""
@@ -101,6 +103,8 @@ class NotifierConfig:
             ntfy_url=ConfigDB.get("ntfyUrl"),
             ntfy_username=ConfigDB.get("ntfyUsername"),
             ntfy_password=ConfigDB.get("ntfyPassword"),
+            feishu_webhook=ConfigDB.get("feishuWebhook"),
+            feishu_secret=ConfigDB.get("feishuSecret"),
             audio_path=ConfigDB.get("audioPath")
         )
 
@@ -250,6 +254,24 @@ class NotifierManager():
             except Exception as e:
                 loguru.logger.error(f"Ntfy创建失败: {e}")
 
+        # Feishu
+        if config.feishu_webhook:
+            try:
+                from util.FeishuUtil import FeishuNotifier
+                notifier = FeishuNotifier(
+                    webhook=config.feishu_webhook,
+                    secret=config.feishu_secret,
+                    title=title,
+                    content=content,
+                    interval_seconds=interval_seconds,
+                    duration_minutes=duration_minutes,
+                )
+                manager.register_notifier("Feishu", notifier)
+            except ImportError as e:
+                loguru.logger.error(f"Feishu导入失败: {e}")
+            except Exception as e:
+                loguru.logger.error(f"Feishu创建失败: {e}")
+
         # Audio
         if config.audio_path:
             try:
@@ -289,6 +311,7 @@ class NotifierManager():
              ("PushPlus", config.pushplus_token, "PushPlus"),
              ("Bark", config.bark_token, "Bark"),
              ("Ntfy", config.ntfy_url, "Ntfy"),
+             ("Feishu", config.feishu_webhook, "飞书"),
              ("Audio", config.audio_path, "音频通知")
         ]
         

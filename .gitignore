@@ -23,3 +23,7 @@ main.dist
 .DS_Store
 bilitickerbuy.egg-info
 btb_runs
+btb_logs/
+tickets/
+ticket_configs/
+抢票信息/

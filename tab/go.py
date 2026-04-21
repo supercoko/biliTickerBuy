@@ -394,6 +394,44 @@ def go_tab(demo: gr.Blocks):
                 )
 
             with gr.Accordion(
+                label="飞书通知配置",
+                open=False,
+                elem_classes="btb-card",
+            ):
+                feishu_ui = gr.Textbox(
+                    value=(ConfigDB.get("feishuWebhook") or ""),
+                    label="飞书机器人 Webhook｜输入完成后，回车键保存",
+                    interactive=True,
+                    info="填入群机器人的 Webhook 地址，或仅 token 部分（格式类似 https://open.feishu.cn/open-apis/bot/v2/hook/xxxxxx）",
+                )
+                feishu_secret_ui = gr.Textbox(
+                    value=(ConfigDB.get("feishuSecret") or ""),
+                    label="飞书签名 Secret [可选]｜输入完成后，回车键保存",
+                    interactive=True,
+                    type="password",
+                    info="仅当机器人开启「签名校验」时需要填写",
+                )
+
+                def test_feishu_connection():
+                    webhook = ConfigDB.get("feishuWebhook")
+                    secret = ConfigDB.get("feishuSecret")
+                    if not webhook:
+                        return "错误: 请先设置飞书 Webhook"
+                    from util import FeishuUtil
+
+                    success, message = FeishuUtil.test_connection(webhook, secret)
+                    return f"{'成功' if success else '错误'}: {message}"
+
+                test_feishu_button = gr.Button(
+                    "测试飞书连接",
+                    elem_classes="!rounded-xl !border border-sky-200 dark:border-sky-900 !transition",
+                )
+                test_feishu_result = gr.Textbox(label="测试结果", interactive=False)
+                test_feishu_button.click(
+                    fn=test_feishu_connection, inputs=[], outputs=test_feishu_result
+                )
+
+            with gr.Accordion(
                 label="Ntfy配置",
                 open=False,
                 elem_classes="btb-card",
@@ -489,6 +527,14 @@ def go_tab(demo: gr.Blocks):
                 ConfigDB.insert("ntfyPassword", x)
                 return gr.update(value=ConfigDB.get("ntfyPassword"))
 
+            def inner_input_feishu(x):
+                ConfigDB.insert("feishuWebhook", x)
+                return gr.update(value=ConfigDB.get("feishuWebhook"))
+
+            def inner_input_feishu_secret(x):
+                ConfigDB.insert("feishuSecret", x)
+                return gr.update(value=ConfigDB.get("feishuSecret"))
+
             def inner_input_audio_path(x):
                 ConfigDB.insert("audioPath", x)
                 return gr.update(value=ConfigDB.get("audioPath"))
@@ -533,6 +579,16 @@ def go_tab(demo: gr.Blocks):
                 outputs=ntfy_password_ui,
             )
 
+            feishu_ui.submit(
+                fn=inner_input_feishu, inputs=feishu_ui, outputs=feishu_ui
+            )
+
+            feishu_secret_ui.submit(
+                fn=inner_input_feishu_secret,
+                inputs=feishu_secret_ui,
+                outputs=feishu_secret_ui,
+            )
+
             test_all_push_button.click(
                 fn=test_all_push, inputs=[], outputs=test_push_result
             )
@@ -559,6 +615,32 @@ def go_tab(demo: gr.Blocks):
                 value=1000,
                 minimum=1,
                 info="设置抢票请求之间的时间间隔（单位：毫秒），建议不要设置太小",
+            )
+            interval_jitter_ui = gr.Slider(
+                label="间隔抖动",
+                value=0.25,
+                minimum=0,
+                maximum=0.6,
+                step=0.05,
+                info="抖动比例（0-0.6），建议 0.2~0.35。避免固定节奏触发风控",
+            )
+            max_retries_ui = gr.Number(
+                label="单轮最大重试",
+                value=200,
+                minimum=20,
+                info="每次 prepare 后 createV2 的最大尝试次数",
+            )
+        with gr.Row(elem_classes="btb-card !items-end !gap-3"):
+            scavenge_mode_ui = gr.Checkbox(
+                label="🔍 捡漏模式",
+                value=False,
+                info="对「无票/库存不足」也持续轮询等待退票；建议配合较大间隔使用",
+            )
+            scavenge_interval_ui = gr.Number(
+                label="捡漏间隔 (ms)",
+                value=3000,
+                minimum=500,
+                info="捡漏模式下无票时的轮询间隔，建议 2000~5000",
             )
             choices = ["网页"]
             if platform.system() == "Windows":
@@ -601,6 +683,10 @@ def go_tab(demo: gr.Blocks):
         https_proxys,
         terminal_ui,
         hide_random_message,
+        interval_jitter,
+        max_retries,
+        scavenge_mode,
+        scavenge_interval,
     ):
         if not files:
             return [gr.update(value=withTimeString("未提交抢票配置"), visible=True)]
@@ -634,6 +720,8 @@ def go_tab(demo: gr.Blocks):
                         "ntfy_url": ConfigDB.get("ntfyUrl"),
                         "ntfy_username": ConfigDB.get("ntfyUsername"),
                         "ntfy_password": ConfigDB.get("ntfyPassword"),
+                        "feishu_webhook": ConfigDB.get("feishuWebhook"),
+                        "feishu_secret": ConfigDB.get("feishuSecret"),
                     },
                 )
                 endpoints_next_idx += 1
@@ -658,9 +746,15 @@ def go_tab(demo: gr.Blocks):
                     ntfy_url=ConfigDB.get("ntfyUrl"),
                     ntfy_username=ConfigDB.get("ntfyUsername"),
                     ntfy_password=ConfigDB.get("ntfyPassword"),
+                    feishu_webhook=ConfigDB.get("feishuWebhook"),
+                    feishu_secret=ConfigDB.get("feishuSecret"),
                     https_proxys=",".join(assigned_proxies[assigned_proxies_next_idx]),
                     terminal_ui=terminal_ui,
                     show_random_message=not hide_random_message,
+                    max_retries=int(max_retries or 200),
+                    interval_jitter=float(interval_jitter or 0.0),
+                    scavenge_mode=bool(scavenge_mode),
+                    scavenge_interval=int(scavenge_interval or 3000),
                 )
                 assigned_proxies_next_idx += 1
         gr.Info("正在启动，请等待抢票页面弹出。")
@@ -743,5 +837,9 @@ def go_tab(demo: gr.Blocks):
             https_proxy_ui,
             terminal_ui,
             show_random_message_ui,
+            interval_jitter_ui,
+            max_retries_ui,
+            scavenge_mode_ui,
+            scavenge_interval_ui,
         ],
     )

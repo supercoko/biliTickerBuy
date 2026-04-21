@@ -3,7 +3,7 @@ import os
 import subprocess
 import sys
 import time
-from random import randint
+from random import randint, uniform
 from datetime import datetime
 from json import JSONDecodeError
 import shutil
@@ -20,6 +20,11 @@ from util.CTokenUtil import CTokenGenerator
 
 
 base_url = "https://show.bilibili.com"
+
+# errno 属于「没票 / 正在售罄」，可在捡漏模式下继续轮询
+SOLD_OUT_ERRNOS = {100001, 100009, 100039}
+# errno 属于「系统繁忙」，拉长间隔后重试，不算失败
+BUSY_ERRNOS = {3, 900001, 900002}
 
 
 def get_qrcode_url(_request, order_id) -> str:
@@ -38,6 +43,7 @@ def _format_countdown(seconds: float) -> str:
 
 
 def _wait_until_start(time_start: str):
+    """倒计时等待。最后 500ms 使用 busy-wait 提高精度（Windows sleep 精度差）。"""
     if not time_start:
         return
 
@@ -62,7 +68,14 @@ def _wait_until_start(time_start: str):
         if remaining <= next_report_at:
             yield f"距离开始抢票还有: {_format_countdown(remaining)}"
             next_report_at = max(0.0, remaining - 5)
-        time.sleep(min(0.5, remaining))
+        # 最后 500ms busy-wait 提升首包精度
+        if remaining > 0.5:
+            time.sleep(min(0.3, remaining - 0.5))
+        else:
+            # busy loop
+            while time.perf_counter() < end_time:
+                pass
+            return
 
 
 def _build_token_payload(tickets_info: dict) -> dict:
@@ -93,6 +106,16 @@ def _is_create_success(ret: dict, err: int) -> bool:
     return err == 0 and "defaultBBR" not in resp_message
 
 
+def _jittered_sleep(interval_ms: float, jitter_ratio: float):
+    """基础间隔 ± jitter_ratio 的抖动，避免固定频率被风控识别。"""
+    base = interval_ms / 1000.0
+    if jitter_ratio <= 0:
+        time.sleep(base)
+        return
+    delta = base * jitter_ratio
+    time.sleep(max(0.05, base + uniform(-delta, delta)))
+
+
 def buy_stream(
     tickets_info,
     time_start,
@@ -101,7 +124,21 @@ def buy_stream(
     https_proxys,
     show_random_message=True,
     show_qrcode=True,
+    max_retries: int = 200,
+    interval_jitter: float = 0.25,
+    scavenge_mode: bool = False,
+    scavenge_interval: int = 3000,
 ):
+    """抢票主循环。
+
+    Parameters
+    ----------
+    max_retries: createV2 阶段每轮最大重试次数（达到后会重新 prepare）。
+    interval_jitter: 每次下单间隔的抖动比例，0.25 表示 ±25%。
+    scavenge_mode: 捡漏模式——遇到「无票/库存不足/活动收摊」也持续轮询，
+                   配合较长的 ``scavenge_interval`` 应对退票释放。
+    scavenge_interval: 捡漏模式下，「无票」时的轮询间隔（ms）。
+    """
     isRunning = True
     tickets_info = json.loads(tickets_info)
     detail = tickets_info["detail"]
@@ -116,6 +153,9 @@ def buy_stream(
     token_payload = _build_token_payload(tickets_info)
 
     yield from _wait_until_start(time_start)
+
+    if scavenge_mode:
+        yield f"🔍 捡漏模式已开启（间隔 {scavenge_interval}ms ± {int(interval_jitter*100)}%）"
 
     while isRunning:
         try:
@@ -138,7 +178,7 @@ def buy_stream(
             )
 
             result = None
-            for attempt in range(1, 61):
+            for attempt in range(1, max_retries + 1):
                 if not isRunning:
                     yield "抢票结束"
                     break
@@ -168,18 +208,33 @@ def buy_stream(
                         result = (ret, err)
                         break
                     if err == 100051:
+                        # token 过期，立即退出重试循环重新 prepare
                         break
-                    yield f"[尝试 {attempt}/60]  [{err}]({ERRNO_DICT.get(err, '未知错误码')}) | {ret}"
+                    # 捡漏模式：无票/库存不足/活动收摊 → 拉长间隔继续轮询
+                    if err in SOLD_OUT_ERRNOS:
+                        if scavenge_mode:
+                            yield f"[捡漏 {attempt}/{max_retries}] [{err}]({ERRNO_DICT.get(err, '未知')}) 等待退票..."
+                            _jittered_sleep(scavenge_interval, interval_jitter)
+                            continue
+                        # 非捡漏模式下 100039 表示活动彻底结束，退出
+                        if err == 100039:
+                            yield f"活动已结束 ({err})，停止抢票"
+                            return
+                    if err in BUSY_ERRNOS:
+                        yield f"[尝试 {attempt}/{max_retries}] 服务繁忙 [{err}]，退避"
+                        _jittered_sleep(interval * 2, interval_jitter)
+                        continue
+                    yield f"[尝试 {attempt}/{max_retries}]  [{err}]({ERRNO_DICT.get(err, '未知错误码')}) | {ret}"
 
-                    time.sleep(interval / 1000)
+                    _jittered_sleep(interval, interval_jitter)
 
                 except RequestException as e:
-                    yield f"[尝试 {attempt}/60] 请求异常: {e}"
-                    time.sleep(interval / 1000)
+                    yield f"[尝试 {attempt}/{max_retries}] 请求异常: {e}"
+                    _jittered_sleep(interval, interval_jitter)
 
                 except Exception as e:
-                    yield f"[尝试 {attempt}/60] 未知异常: {e}"
-                    time.sleep(interval / 1000)
+                    yield f"[尝试 {attempt}/{max_retries}] 未知异常: {e}"
+                    _jittered_sleep(interval, interval_jitter)
             else:
                 if show_random_message:
                     yield f"群友说👴： {get_random_fail_message()}"
@@ -239,10 +294,15 @@ def buy(
     ntfy_url=None,
     ntfy_username=None,
     ntfy_password=None,
+    feishu_webhook=None,
+    feishu_secret=None,
     show_random_message=True,
     show_qrcode=True,
+    max_retries: int = 200,
+    interval_jitter: float = 0.25,
+    scavenge_mode: bool = False,
+    scavenge_interval: int = 3000,
 ):
-    # 创建NotifierConfig对象
     notifier_config = NotifierConfig(
         serverchan_key=serverchanKey,
         serverchan3_api_url=serverchan3ApiUrl,
@@ -251,6 +311,8 @@ def buy(
         ntfy_url=ntfy_url,
         ntfy_username=ntfy_username,
         ntfy_password=ntfy_password,
+        feishu_webhook=feishu_webhook,
+        feishu_secret=feishu_secret,
         audio_path=audio_path,
     )
 
@@ -262,6 +324,10 @@ def buy(
         https_proxys,
         show_random_message,
         show_qrcode,
+        max_retries=max_retries,
+        interval_jitter=interval_jitter,
+        scavenge_mode=scavenge_mode,
+        scavenge_interval=scavenge_interval,
     ):
         logger.info(msg)
 
@@ -280,8 +346,14 @@ def buy_new_terminal(
     ntfy_url=None,
     ntfy_username=None,
     ntfy_password=None,
+    feishu_webhook=None,
+    feishu_secret=None,
     show_random_message=True,
     terminal_ui="网页",
+    max_retries: int = 200,
+    interval_jitter: float = 0.25,
+    scavenge_mode: bool = False,
+    scavenge_interval: int = 3000,
 ) -> subprocess.Popen:
     command = None
 
@@ -323,10 +395,19 @@ def buy_new_terminal(
         command.extend(["--ntfy_username", ntfy_username])
     if ntfy_password:
         command.extend(["--ntfy_password", ntfy_password])
+    if feishu_webhook:
+        command.extend(["--feishu_webhook", feishu_webhook])
+    if feishu_secret:
+        command.extend(["--feishu_secret", feishu_secret])
     if https_proxys:
         command.extend(["--https_proxys", https_proxys])
     if not show_random_message:
         command.extend(["--hide_random_message"])
+    command.extend(["--max_retries", str(max_retries)])
+    command.extend(["--interval_jitter", str(interval_jitter)])
+    if scavenge_mode:
+        command.append("--scavenge_mode")
+        command.extend(["--scavenge_interval", str(scavenge_interval)])
     if terminal_ui == "网页":
         command.append("--web")
     command.extend(["--endpoint_url", endpoint_url])
