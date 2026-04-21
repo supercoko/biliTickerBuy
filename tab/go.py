@@ -253,7 +253,7 @@ def go_tab(demo: gr.Blocks):
             )
 
             with gr.Accordion(
-                label="填写你的代理服务器[可选]",
+                label="填写你的代理服务器 / Clash 快捷接入[可选]",
                 open=False,
                 elem_classes="btb-card",
             ):
@@ -283,6 +283,88 @@ def go_tab(demo: gr.Blocks):
 
                 https_proxy_ui.submit(
                     fn=input_https_proxy, inputs=https_proxy_ui, outputs=https_proxy_ui
+                )
+
+                gr.Markdown(
+                    """
+                    ---
+                    **⚡ Clash / Mihomo 快速接入**
+
+                    填写 Clash 的监听端口，一键写入上方代理栏。`应用` 会覆盖；`追加` 会加到列表末尾，配合 Clash 多端口监听实现节点轮换。
+
+                    > 常见端口：Clash 默认 `7890`，Clash Verge Rev `7897`，Mihomo Party `7890`；协议选 `http` 即可（混合端口会自动处理 SOCKS 握手）。
+                    """
+                )
+                with gr.Row():
+                    clash_scheme_ui = gr.Dropdown(
+                        label="协议",
+                        choices=["http", "socks5"],
+                        value=(ConfigDB.get("clash_scheme") or "http"),
+                        scale=1,
+                    )
+                    clash_host_ui = gr.Textbox(
+                        label="Clash 主机",
+                        value=(ConfigDB.get("clash_host") or "127.0.0.1"),
+                        scale=2,
+                    )
+                    clash_port_ui = gr.Textbox(
+                        label="Clash 端口",
+                        value=(ConfigDB.get("clash_port") or "7890"),
+                        scale=1,
+                    )
+                with gr.Row():
+                    apply_clash_btn = gr.Button(
+                        "📥 应用为代理",
+                        elem_classes="!rounded-xl",
+                    )
+                    append_clash_btn = gr.Button(
+                        "➕ 追加到代理列表",
+                        elem_classes="!rounded-xl",
+                    )
+
+                def _build_clash_url(scheme, host, port):
+                    scheme = (scheme or "http").strip() or "http"
+                    host = (host or "127.0.0.1").strip() or "127.0.0.1"
+                    port = (port or "7890").strip() or "7890"
+                    return f"{scheme}://{host}:{port}"
+
+                def _save_clash_fields(scheme, host, port):
+                    ConfigDB.insert("clash_scheme", scheme or "http")
+                    ConfigDB.insert("clash_host", host or "127.0.0.1")
+                    ConfigDB.insert("clash_port", port or "7890")
+
+                def apply_clash_proxy(scheme, host, port):
+                    _save_clash_fields(scheme, host, port)
+                    url = _build_clash_url(scheme, host, port)
+                    ConfigDB.insert("https_proxy", url)
+                    return gr.update(value=url)
+
+                def append_clash_proxy(existing, scheme, host, port):
+                    _save_clash_fields(scheme, host, port)
+                    url = _build_clash_url(scheme, host, port)
+                    parts = [
+                        p.strip() for p in (existing or "").split(",") if p.strip()
+                    ]
+                    if url not in parts:
+                        parts.append(url)
+                    new_val = ",".join(parts)
+                    ConfigDB.insert("https_proxy", new_val)
+                    return gr.update(value=new_val)
+
+                apply_clash_btn.click(
+                    fn=apply_clash_proxy,
+                    inputs=[clash_scheme_ui, clash_host_ui, clash_port_ui],
+                    outputs=https_proxy_ui,
+                )
+                append_clash_btn.click(
+                    fn=append_clash_proxy,
+                    inputs=[
+                        https_proxy_ui,
+                        clash_scheme_ui,
+                        clash_host_ui,
+                        clash_port_ui,
+                    ],
+                    outputs=https_proxy_ui,
                 )
 
                 test_proxy_btn = gr.Button(
@@ -742,7 +824,10 @@ def go_tab(demo: gr.Blocks):
 
                 buy_new_terminal(
                     endpoint_url=demo.local_url,
-                    tickets_info=content,
+                    # 直接传文件路径而非 JSON 内容，避免新终端（尤其 wt.exe）
+                    # 对命令行做二次引号解析时把带空格/特殊符号的 JSON 拆碎；
+                    # 子进程 load_tickets_info 会自动识别路径或 JSON 字符串。
+                    tickets_info=filename,
                     time_start=time_start,
                     interval=interval,
                     audio_path=audio_path,

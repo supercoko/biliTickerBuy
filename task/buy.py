@@ -457,8 +457,26 @@ def buy_new_terminal(
     if terminal_ui == "网页":
         proc = subprocess.Popen(command)
     else:
-        kwargs = {}
         if os.name == "nt":
-            kwargs["creationflags"] = subprocess.CREATE_NEW_CONSOLE
-        proc = subprocess.Popen(command, **kwargs)
+            # Windows：优先使用 Windows Terminal（wt.exe），以 tab 形式
+            # 复用当前窗口（-w 0），多配置时每个抢票任务一个 tab，
+            # 比 cmd/powershell 各开一个独立窗口整洁得多。
+            wt_path = shutil.which("wt.exe") or shutil.which("wt")
+            if wt_path:
+                # 用 `--` 分隔，防止 wt 把 Python 的长选项当成自己的子命令；
+                # tab 标题由子进程启动时通过 `title` 命令自行设置（见 app_cmd/buy.py）。
+                wt_cmd = [wt_path, "-w", "0", "new-tab", "--"] + command
+                try:
+                    proc = subprocess.Popen(wt_cmd)
+                except (OSError, subprocess.SubprocessError):
+                    proc = subprocess.Popen(
+                        command, creationflags=subprocess.CREATE_NEW_CONSOLE
+                    )
+            else:
+                proc = subprocess.Popen(
+                    command, creationflags=subprocess.CREATE_NEW_CONSOLE
+                )
+        else:
+            # macOS / Linux：沿用原有行为，走默认终端
+            proc = subprocess.Popen(command)
     return proc

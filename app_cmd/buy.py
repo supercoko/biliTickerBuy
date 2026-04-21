@@ -1,7 +1,20 @@
 from argparse import Namespace
 import os
+import sys
 
 from util import GlobalStatusInstance
+
+
+def _set_terminal_title(title: str) -> None:
+    """在当前终端窗口标题栏显示配置名，便于多并发时区分。"""
+    try:
+        if os.name == "nt":
+            os.system(f'title {title}')
+        else:
+            sys.stdout.write(f"\33]0;{title}\a")
+            sys.stdout.flush()
+    except Exception:
+        pass
 
 
 def buy_cmd(args: Namespace):
@@ -26,6 +39,7 @@ def buy_cmd(args: Namespace):
     tickets_info, config_path = load_tickets_info(args.tickets_info)
     filename = os.path.basename(config_path) if config_path else "default"
     filename_only = os.path.basename(filename)
+    GlobalStatusInstance.nowTask = filename_only
     if getattr(args, "web", False):
         log_file = loguru_config(LOG_DIR, f"{uuid.uuid1()}.log", enable_console=False)
         from task.endpoint import start_heartbeat_thread
@@ -73,7 +87,6 @@ def buy_cmd(args: Namespace):
         )
         client = gradio_client.Client(args.endpoint_url)
         assert demo.local_url
-        GlobalStatusInstance.nowTask = filename_only
         start_heartbeat_thread(
             client,
             self_url=demo.local_url,
@@ -81,6 +94,11 @@ def buy_cmd(args: Namespace):
         )
     else:
         log_file = loguru_config(LOG_DIR, f"{uuid.uuid1()}.log", enable_console=True)
+
+    # 在终端窗口标题与日志开头突出显示「当前配置」，多并发时一眼可辨
+    _set_terminal_title(f"抢票 - {filename_only}")
+    logger.info(f"📂 当前抢票配置: {filename_only}")
+
     buy(
         tickets_info,
         args.time_start,
