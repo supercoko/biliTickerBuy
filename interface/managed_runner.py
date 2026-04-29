@@ -113,6 +113,11 @@ def main(run_dir_arg: str) -> int:
             runtime.get("https_proxys", "none"),
             runtime.get("show_random_message", True),
             False,
+            max_retries=runtime.get("max_retries", 200),
+            interval_jitter=runtime.get("interval_jitter", 0.25),
+            scavenge_mode=runtime.get("scavenge_mode", False),
+            scavenge_interval=runtime.get("scavenge_interval", 3000),
+            scavenge_max_retries=runtime.get("scavenge_max_retries", 0),
         ):
             _append_log(logs_path, message)
             with status_lock:

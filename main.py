@@ -36,8 +36,9 @@ def main():
     parser = argparse.ArgumentParser(
         description=(
             "BiliTickerBuy\n\n"
-            "Use `btb buy` to buy tickets directly in the command line."
-            "Run `btb` without arguments to open the UI."
+            "Use `btb buy` to buy tickets directly in the command line.\n"
+            "Use `btb check-cookie` to validate the current login cookie.\n"
+            "Run `btb` without arguments to open the UI.\n"
             "Run `btb buy -h` for `btb buy` detailed options."
         ),
         epilog=(
@@ -51,13 +52,29 @@ def main():
     subparsers = parser.add_subparsers(
         dest="command",
         title="Available Commands",
-        metavar="{buy}",
+        metavar="{buy,check-cookie}",
         description="Use one of the following commands",
     )
     buy_parser = subparsers.add_parser(
         "buy",
         help="Buy tickets directly in the command line",
         parents=[gradio_parent],
+    )
+    check_cookie_parser = subparsers.add_parser(
+        "check-cookie",
+        help="Validate the current Bilibili login cookie",
+    )
+    check_cookie_parser.add_argument(
+        "--cookies_path",
+        type=str,
+        default=os.environ.get("BTB_COOKIES_PATH", ""),
+        help="Cookie store path. Defaults to BTB_COOKIES_PATH or the configured cookie file.",
+    )
+    check_cookie_parser.add_argument(
+        "--https_proxys",
+        type=str,
+        default=os.environ.get("BTB_HTTPS_PROXYS", "none"),
+        help="HTTPS proxy, e.g. http://127.0.0.1:8080",
     )
     # ===== Buy Core =====
     buy_core = buy_parser.add_argument_group("Buy Core Options")
@@ -206,6 +223,10 @@ def main():
         from app_cmd.buy import buy_cmd
 
         buy_cmd(args=args)
+    elif args.command == "check-cookie":
+        from app_cmd.auth import check_cookie_cmd
+
+        check_cookie_cmd(args=args)
     else:
         from app_cmd.ticker import ticker_cmd
 

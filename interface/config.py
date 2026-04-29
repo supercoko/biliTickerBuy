@@ -191,6 +191,11 @@ def build_runtime_options(
     ntfy_password: str = "",
     show_random_message: bool = True,
     show_qrcode: bool = False,
+    max_retries: int = 200,
+    interval_jitter: float = 0.25,
+    scavenge_mode: bool = False,
+    scavenge_interval: int = 3000,
+    scavenge_max_retries: int = 0,
 ) -> dict[str, Any]:
     return {
         "interval": normalize_interval(interval),
@@ -206,6 +211,11 @@ def build_runtime_options(
         "ntfy_password": ntfy_password,
         "show_random_message": show_random_message,
         "show_qrcode": show_qrcode,
+        "max_retries": int(max_retries),
+        "interval_jitter": float(interval_jitter),
+        "scavenge_mode": bool(scavenge_mode),
+        "scavenge_interval": normalize_interval(scavenge_interval),
+        "scavenge_max_retries": int(scavenge_max_retries),
     }
 
 

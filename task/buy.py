@@ -3,8 +3,9 @@ import os
 import subprocess
 import sys
 import time
+from email.utils import parsedate_to_datetime
 from random import randint, uniform
-from datetime import datetime
+from datetime import datetime, timezone
 from json import JSONDecodeError
 import shutil
 import qrcode
@@ -25,6 +26,60 @@ base_url = "https://show.bilibili.com"
 SOLD_OUT_ERRNOS = {100001, 100009, 100039}
 # errno 属于「系统繁忙」，拉长间隔后重试，不算失败
 BUSY_ERRNOS = {3, 900001, 900002}
+HTTP_THROTTLE_STATUSES = {412, 429}
+SCAVENGE_MIN_INTERVAL_MS = 2500
+RATE_LIMIT_BASE_BACKOFF_MS = 15000
+RATE_LIMIT_MAX_BACKOFF_MS = 120000
+RATE_LIMIT_BACKOFF_STEPS = 4
+
+
+def _get_http_status(exc: RequestException) -> int | None:
+    response = getattr(exc, "response", None)
+    return getattr(response, "status_code", None)
+
+
+def _retry_after_ms(exc: RequestException) -> int | None:
+    response = getattr(exc, "response", None)
+    if response is None:
+        return None
+    retry_after = response.headers.get("Retry-After")
+    if not retry_after:
+        return None
+    try:
+        return max(0, int(float(retry_after) * 1000))
+    except ValueError:
+        try:
+            retry_at = parsedate_to_datetime(retry_after)
+        except (TypeError, ValueError):
+            return None
+        if retry_at.tzinfo is None:
+            retry_at = retry_at.replace(tzinfo=timezone.utc)
+        seconds = (retry_at - datetime.now(timezone.utc)).total_seconds()
+        return max(0, int(seconds * 1000))
+
+
+def _rate_limit_backoff_ms(
+    exc: RequestException,
+    rate_limit_attempt: int,
+    interval_ms: int,
+    scavenge_interval_ms: int,
+) -> int:
+    retry_after = _retry_after_ms(exc)
+    if retry_after is not None:
+        return min(RATE_LIMIT_MAX_BACKOFF_MS, max(1000, retry_after))
+    status = _get_http_status(exc)
+    base_floor = 60000 if status == 412 else RATE_LIMIT_BASE_BACKOFF_MS
+    base = max(base_floor, interval_ms * 3, scavenge_interval_ms * 2)
+    exponent = min(max(0, rate_limit_attempt - 1), RATE_LIMIT_BACKOFF_STEPS)
+    return min(RATE_LIMIT_MAX_BACKOFF_MS, int(base * (2**exponent)))
+
+
+def _http_throttle_label(status: int | None) -> str:
+    if status == 412:
+        return "风控拦截"
+    if status == 429:
+        return "请求过频"
+    return "请求受限"
 
 
 def get_qrcode_url(_request, order_id) -> str:
@@ -144,6 +199,8 @@ def buy_stream(
                           ``<= 0`` 表示无限轮询（常用于长时间守株待兔）。
     """
     isRunning = True
+    interval = int(interval or 1000)
+    scavenge_interval = int(scavenge_interval or 3000)
     tickets_info = json.loads(tickets_info)
     detail = tickets_info["detail"]
     cookies = tickets_info["cookies"]
@@ -158,6 +215,13 @@ def buy_stream(
 
     yield from _wait_until_start(time_start)
 
+    if scavenge_mode and scavenge_interval < SCAVENGE_MIN_INTERVAL_MS:
+        yield (
+            f"捡漏间隔 {scavenge_interval}ms 过低，已自动提升到 "
+            f"{SCAVENGE_MIN_INTERVAL_MS}ms，降低 HTTP 429/风控概率"
+        )
+        scavenge_interval = SCAVENGE_MIN_INTERVAL_MS
+
     if scavenge_mode:
         limit_desc = str(scavenge_max_retries) if scavenge_max_retries > 0 else "∞"
         yield (
@@ -165,6 +229,8 @@ def buy_stream(
             f"{int(interval_jitter*100)}%, 上限 {limit_desc} 次）"
         )
 
+    rate_limit_attempt = 0
+    total_scavenge_attempt = 0
     while isRunning:
         try:
             yield "1）订单准备"
@@ -187,7 +253,6 @@ def buy_stream(
 
             result = None
             attempt = 0
-            scavenge_attempt = 0
             scavenge_limit_str = (
                 str(scavenge_max_retries) if scavenge_max_retries > 0 else "∞"
             )
@@ -210,6 +275,8 @@ def buy_stream(
                         data=payload,
                         isJson=True,
                     ).json()
+                    if rate_limit_attempt > 0:
+                        rate_limit_attempt = max(0, rate_limit_attempt - 1)
                     err = int(ret.get("errno", ret.get("code")))
                     if err == 100034:
                         yield f"更新票价为：{ret['data']['pay_money'] / 100}"
@@ -224,17 +291,17 @@ def buy_stream(
                     # 捡漏分支：使用独立计数器，不消耗 max_retries
                     if err in SOLD_OUT_ERRNOS:
                         if scavenge_mode:
-                            scavenge_attempt += 1
+                            total_scavenge_attempt += 1
                             if (
                                 scavenge_max_retries > 0
-                                and scavenge_attempt > scavenge_max_retries
+                                and total_scavenge_attempt > scavenge_max_retries
                             ):
                                 yield (
                                     f"捡漏达上限 {scavenge_max_retries} 次，停止抢票"
                                 )
                                 return
                             yield (
-                                f"[捡漏 {scavenge_attempt}/{scavenge_limit_str}] "
+                                f"[捡漏 {total_scavenge_attempt}/{scavenge_limit_str}] "
                                 f"[{err}]({ERRNO_DICT.get(err, '未知')}) 等待退票..."
                             )
                             _jittered_sleep(scavenge_interval, interval_jitter)
@@ -244,8 +311,17 @@ def buy_stream(
                             yield f"活动已结束 ({err})，停止抢票"
                             return
                     if err in BUSY_ERRNOS:
-                        yield f"[尝试] 服务繁忙 [{err}]，退避"
-                        _jittered_sleep(interval * 2, interval_jitter)
+                        busy_backoff_ms = max(interval * 2, 1500)
+                        if scavenge_mode:
+                            busy_backoff_ms = max(
+                                busy_backoff_ms,
+                                min(scavenge_interval, 5000),
+                            )
+                        yield (
+                            f"[尝试] 服务繁忙 [{err}]，"
+                            f"退避 {busy_backoff_ms / 1000:.1f}s"
+                        )
+                        _jittered_sleep(busy_backoff_ms, interval_jitter)
                         continue
 
                     attempt += 1
@@ -256,6 +332,23 @@ def buy_stream(
                     _jittered_sleep(interval, interval_jitter)
 
                 except RequestException as e:
+                    status = _get_http_status(e)
+                    if status in HTTP_THROTTLE_STATUSES:
+                        rate_limit_attempt += 1
+                        backoff_ms = _rate_limit_backoff_ms(
+                            e,
+                            rate_limit_attempt,
+                            int(interval),
+                            int(scavenge_interval if scavenge_mode else 0),
+                        )
+                        yield (
+                            f"[限流 {rate_limit_attempt}] HTTP {status} "
+                            f"{_http_throttle_label(status)}，"
+                            f"冷却 {backoff_ms / 1000:.1f}s 后继续"
+                        )
+                        _jittered_sleep(backoff_ms, interval_jitter)
+                        continue
+
                     attempt += 1
                     if attempt > max_retries:
                         exhausted = True
@@ -313,6 +406,22 @@ def buy_stream(
         except JSONDecodeError as e:
             yield f"配置文件格式错误: {e}"
         except HTTPError as e:
+            status = _get_http_status(e)
+            if status in HTTP_THROTTLE_STATUSES:
+                rate_limit_attempt += 1
+                backoff_ms = _rate_limit_backoff_ms(
+                    e,
+                    rate_limit_attempt,
+                    int(interval),
+                    int(scavenge_interval if scavenge_mode else 0),
+                )
+                yield (
+                    f"订单准备被限制：HTTP {status} "
+                    f"{_http_throttle_label(status)}，冷却 "
+                    f"{backoff_ms / 1000:.1f}s 后重试"
+                )
+                _jittered_sleep(backoff_ms, interval_jitter)
+                continue
             logger.exception(e)
             yield f"请求错误: {e}"
         except Exception as e:

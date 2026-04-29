@@ -134,14 +134,78 @@ class BiliRequest:
         return self._request("POST", url, data=data, isJson=isJson)
 
     def get_request_name(self):
+        return str(self.check_login_state().get("username") or "未登录")
+
+    def check_login_state(self):
+        """Validate the current cookie by calling Bilibili's nav endpoint."""
         try:
-            if not self.cookieManager.have_cookies():
-                loguru.logger.warning("获取用户名失败，请重新登录")
-                return "未登录"
+            cookies = self.cookieManager.get_cookies(force=True)
+            if not cookies:
+                return {
+                    "ok": True,
+                    "valid": False,
+                    "username": "未登录",
+                    "message": "未找到 Cookie，请先扫码登录",
+                    "missing_cookies": ["SESSDATA", "DedeUserID", "bili_jct"],
+                }
+
+            cookie_names = {
+                str(cookie.get("name", ""))
+                for cookie in cookies
+                if isinstance(cookie, dict)
+            }
+            missing_cookies = [
+                name
+                for name in ("SESSDATA", "DedeUserID", "bili_jct")
+                if name not in cookie_names
+            ]
+
             result = self.get("https://api.bilibili.com/x/web-interface/nav").json()
-            return result["data"]["uname"]
-        except Exception:
-            return "未登录"
+            data = result.get("data") if isinstance(result, dict) else {}
+            if not isinstance(data, dict):
+                data = {}
+            username = str(data.get("uname") or "").strip()
+            mid = data.get("mid")
+            is_login = bool(data.get("isLogin")) or bool(username and mid)
+            code = result.get("code") if isinstance(result, dict) else None
+            message = ""
+            if isinstance(result, dict):
+                message = str(result.get("message") or result.get("msg") or "").strip()
+
+            if code == 0 and is_login and username:
+                suffix = ""
+                if missing_cookies:
+                    suffix = "，但缺少 {0}，下单时可能失败".format(
+                        "、".join(missing_cookies)
+                    )
+                return {
+                    "ok": True,
+                    "valid": True,
+                    "username": username,
+                    "mid": mid,
+                    "message": "Cookie 有效，当前账号：{0}{1}".format(
+                        username, suffix
+                    ),
+                    "missing_cookies": missing_cookies,
+                }
+
+            return {
+                "ok": True,
+                "valid": False,
+                "username": "未登录",
+                "mid": mid,
+                "message": message or "Cookie 已失效或未登录，请重新扫码",
+                "missing_cookies": missing_cookies,
+            }
+        except Exception as exc:
+            loguru.logger.warning(f"检测 Cookie 失败: {exc}")
+            return {
+                "ok": False,
+                "valid": False,
+                "username": "未登录",
+                "message": "检测 Cookie 失败：{0}".format(exc),
+                "missing_cookies": [],
+            }
 
     # 兼容旧调用
     def count_and_sleep(self, threshold=60, sleep_time=60):

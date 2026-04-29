@@ -250,6 +250,11 @@ def _run_buy_task(
             runtime_options.get("https_proxys", "none"),
             runtime_options.get("show_random_message", True),
             runtime_options.get("show_qrcode", False),
+            max_retries=runtime_options.get("max_retries", 200),
+            interval_jitter=runtime_options.get("interval_jitter", 0.25),
+            scavenge_mode=runtime_options.get("scavenge_mode", False),
+            scavenge_interval=runtime_options.get("scavenge_interval", 3000),
+            scavenge_max_retries=runtime_options.get("scavenge_max_retries", 0),
         ):
             _append_log(task_id, message)
             if "抢票成功" in message:
@@ -365,6 +370,11 @@ def run_buy_sync(
         runtime.get("https_proxys", "none"),
         runtime.get("show_random_message", True),
         runtime.get("show_qrcode", False),
+        max_retries=runtime.get("max_retries", 200),
+        interval_jitter=runtime.get("interval_jitter", 0.25),
+        scavenge_mode=runtime.get("scavenge_mode", False),
+        scavenge_interval=runtime.get("scavenge_interval", 3000),
+        scavenge_max_retries=runtime.get("scavenge_max_retries", 0),
     ):
         logs.append(message)
         if "抢票成功" in message:

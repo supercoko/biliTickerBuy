@@ -721,8 +721,8 @@ def go_tab(demo: gr.Blocks):
             scavenge_interval_ui = gr.Number(
                 label="捡漏间隔 (ms)",
                 value=3000,
-                minimum=500,
-                info="捡漏模式下无票时的轮询间隔，建议 2000~5000",
+                minimum=2500,
+                info="捡漏模式下无票时的轮询间隔，建议 3000~8000；过低会自动保护",
             )
             scavenge_max_retries_ui = gr.Number(
                 label="捡漏最大次数",
@@ -811,6 +811,11 @@ def go_tab(demo: gr.Blocks):
                         "ntfy_password": ConfigDB.get("ntfyPassword"),
                         "feishu_webhook": ConfigDB.get("feishuWebhook"),
                         "feishu_secret": ConfigDB.get("feishuSecret"),
+                        "max_retries": int(max_retries or 200),
+                        "interval_jitter": float(interval_jitter or 0.0),
+                        "scavenge_mode": bool(scavenge_mode),
+                        "scavenge_interval": int(scavenge_interval or 3000),
+                        "scavenge_max_retries": int(scavenge_max_retries or 0),
                     },
                 )
                 endpoints_next_idx += 1

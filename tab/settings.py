@@ -513,6 +513,11 @@ def setting_tab():
                 gr_file_ui = gr.File(
                     label="当前登录信息文件", value=lambda: GLOBAL_COOKIE_PATH, scale=1
                 )
+            cookie_status_ui = gr.Textbox(
+                label="Cookie 状态",
+                value="尚未检测",
+                interactive=False,
+            )
 
             def generate_qrcode():
                 global session_cookies
@@ -674,7 +679,26 @@ def setting_tab():
                     label="导入",
                     elem_classes="!rounded-xl !border !border-slate-200 dark:border-slate-700 !shadow-sm",
                 )
+                check_cookie_btn = gr.Button(
+                    "检测 Cookie",
+                    elem_classes="!rounded-xl !border !border-emerald-200 !bg-emerald-50 !px-4 !text-emerald-950 !shadow-sm hover:!bg-emerald-100 !transition",
+                )
                 upload_ui.upload(upload_file, [upload_ui], [username_ui, gr_file_ui])
+
+                def on_check_cookie():
+                    state = util.main_request.check_login_state()
+                    message = str(state.get("message") or "检测完成")
+                    username = str(state.get("username") or "未登录")
+                    if state.get("valid"):
+                        gr.Info(message, duration=5)
+                    else:
+                        gr.Warning(message, duration=5)
+                    return gr.update(value=username), gr.update(value=message)
+
+                check_cookie_btn.click(
+                    on_check_cookie,
+                    outputs=[username_ui, cookie_status_ui],
+                )
 
         # 手机号输入卡片
         with gr.Accordion(
